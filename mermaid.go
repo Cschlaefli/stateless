@@ -73,10 +73,15 @@ func (m *mermaidGraph) formatStateMachine(sm *StateMachine) string {
 		}
 	}
 
+	// Notes for non-trigger-specific entry/exit/activate/deactivate actions.
+	for _, sr := range stateList {
+		m.writeStateNote(&sb, sr)
+	}
+
 	// Outer-level transitions (merged per src→dst pair).
 	sb.WriteRune('\n')
 	for _, sr := range stateList {
-		m.writeTransitions(&sb, sr, insideSet)
+		m.writeTransitions(&sb, sm, sr, insideSet)
 	}
 
 	return sb.String()
@@ -121,30 +126,34 @@ func (m *mermaidGraph) writeCompositeState(sb *strings.Builder, sm *StateMachine
 	//   substate → superstate becomes  sub --> [*] : trigger
 	for _, sub := range m.sortedSubstates(sr.Substates) {
 		subID := mermaidStateID(fmt.Sprint(sub.State))
-		for _, label := range m.collectTransitionLabels(sr, sub.State) {
+		for _, label := range m.collectTransitionLabels(sm, sr, sub.State) {
 			sb.WriteString(fmt.Sprintf("%s    [*] --> %s : %s\n", indent, subID, label))
 		}
-		for _, label := range m.collectTransitionLabels(sub, sr.State) {
+		for _, label := range m.collectTransitionLabels(sm, sub, sr.State) {
 			sb.WriteString(fmt.Sprintf("%s    %s --> [*] : %s\n", indent, subID, label))
 		}
 	}
 
-	sb.WriteString(indent + "}\n")
+	sb.WriteString(indent)
+	sb.WriteString("}\n")
 }
 
 // collectTransitionLabels returns one formatted label per trigger in sr that
-// transitions to dst (transitioningTriggerBehaviour and reentryTriggerBehaviour).
-func (m *mermaidGraph) collectTransitionLabels(sr *stateRepresentation, dst State) []string {
+// transitions to dst. Trigger-specific entry actions on the destination are
+// included inline in the label.
+func (m *mermaidGraph) collectTransitionLabels(sm *StateMachine, sr *stateRepresentation, dst State) []string {
 	var labels []string
 	for _, t := range m.sortedTriggers(sr) {
 		switch tb := t.(type) {
 		case *transitioningTriggerBehaviour:
 			if tb.Destination == dst {
-				labels = append(labels, m.fmtLabel(tb.Trigger, tb.Guard, ""))
+				actions := m.getEntryActions(sm, tb.Destination, tb.Trigger)
+				labels = append(labels, m.fmtLabel(tb.Trigger, tb.Guard, "", actions))
 			}
 		case *reentryTriggerBehaviour:
 			if tb.Destination == dst {
-				labels = append(labels, m.fmtLabel(tb.Trigger, tb.Guard, "🔄 "))
+				actions := m.getEntryActions(sm, tb.Destination, tb.Trigger)
+				labels = append(labels, m.fmtLabel(tb.Trigger, tb.Guard, "🔄 ", actions))
 			}
 		}
 	}
@@ -154,7 +163,7 @@ func (m *mermaidGraph) collectTransitionLabels(sr *stateRepresentation, dst Stat
 // writeTransitions emits outer-level transitions for sr, skipping pairs that
 // are inside a composite block. Multiple transitions to the same destination
 // are merged into one arrow with labels joined by " / ".
-func (m *mermaidGraph) writeTransitions(sb *strings.Builder, sr *stateRepresentation, insideSet map[mermaidSrcDst]bool) {
+func (m *mermaidGraph) writeTransitions(sb *strings.Builder, sm *StateMachine, sr *stateRepresentation, insideSet map[mermaidSrcDst]bool) {
 	srcID := mermaidStateID(fmt.Sprint(sr.State))
 
 	// Collect labels grouped by destination, preserving first-seen order.
@@ -178,16 +187,18 @@ func (m *mermaidGraph) writeTransitions(sb *strings.Builder, sr *stateRepresenta
 		switch tb := t.(type) {
 		case *transitioningTriggerBehaviour:
 			if !insideSet[mermaidSrcDst{sr.State, tb.Destination}] {
-				add(tb.Destination, m.fmtLabel(tb.Trigger, tb.Guard, ""))
+				actions := m.getEntryActions(sm, tb.Destination, tb.Trigger)
+				add(tb.Destination, m.fmtLabel(tb.Trigger, tb.Guard, "", actions))
 			}
 		case *reentryTriggerBehaviour:
 			if !insideSet[mermaidSrcDst{sr.State, tb.Destination}] {
-				add(tb.Destination, m.fmtLabel(tb.Trigger, tb.Guard, "🔄 "))
+				actions := m.getEntryActions(sm, tb.Destination, tb.Trigger)
+				add(tb.Destination, m.fmtLabel(tb.Trigger, tb.Guard, "🔄 ", actions))
 			}
 		case *internalTriggerBehaviour:
-			add(sr.State, m.fmtLabel(tb.Trigger, tb.Guard, "🔒 "))
+			add(sr.State, m.fmtLabel(tb.Trigger, tb.Guard, "🔒 ", nil))
 		case *ignoredTriggerBehaviour:
-			add(sr.State, m.fmtLabel(tb.Trigger, tb.Guard, "🚫 "))
+			add(sr.State, m.fmtLabel(tb.Trigger, tb.Guard, "🚫 ", nil))
 		}
 	}
 
@@ -199,10 +210,66 @@ func (m *mermaidGraph) writeTransitions(sb *strings.Builder, sr *stateRepresenta
 	}
 }
 
-func (m *mermaidGraph) fmtLabel(trigger Trigger, guard transitionGuard, prefix string) string {
+// writeStateNote emits a "note right of" block for all non-trigger-specific
+// entry/exit/activate/deactivate actions on sr.
+func (m *mermaidGraph) writeStateNote(sb *strings.Builder, sr *stateRepresentation) {
+	lines := m.formatActionLines(sr)
+	if len(lines) == 0 {
+		return
+	}
+	id := mermaidStateID(fmt.Sprint(sr.State))
+	sb.WriteString(fmt.Sprintf("    note right of %s\n", id))
+	for _, l := range lines {
+		sb.WriteString(fmt.Sprintf("        %s\n", l))
+	}
+	sb.WriteString("    end note\n")
+}
+
+// formatActionLines returns display lines for all non-trigger-specific actions
+// on a state, mirroring the order used in graph.go's formatActions.
+func (m *mermaidGraph) formatActionLines(sr *stateRepresentation) []string {
+	var es []string
+	for _, act := range sr.ActivateActions {
+		es = append(es, "activated / "+mermaidEscLabel(act.Description.String()))
+	}
+	for _, act := range sr.DeactivateActions {
+		es = append(es, "deactivated / "+mermaidEscLabel(act.Description.String()))
+	}
+	for _, act := range sr.EntryActions {
+		if act.Trigger == nil {
+			es = append(es, "entry / "+mermaidEscLabel(act.Description.String()))
+		}
+	}
+	for _, act := range sr.ExitActions {
+		es = append(es, "exit / "+mermaidEscLabel(act.Description.String()))
+	}
+	return es
+}
+
+// getEntryActions returns the descriptions of trigger-specific entry actions
+// on the destination state for the given trigger.
+func (m *mermaidGraph) getEntryActions(sm *StateMachine, dst State, t Trigger) []string {
+	dest := sm.stateConfig[dst]
+	if dest == nil {
+		return nil
+	}
+	var actions []string
+	for _, ea := range dest.EntryActions {
+		if ea.Trigger != nil && *ea.Trigger == t {
+			actions = append(actions, mermaidEscLabel(ea.Description.String()))
+		}
+	}
+	return actions
+}
+
+func (m *mermaidGraph) fmtLabel(trigger Trigger, guard transitionGuard, prefix string, actions []string) string {
 	var sb strings.Builder
 	sb.WriteString(prefix)
 	sb.WriteString(mermaidEscLabel(fmt.Sprint(trigger)))
+	if len(actions) > 0 {
+		sb.WriteString(" / ")
+		sb.WriteString(strings.Join(actions, ", "))
+	}
 	for _, g := range guard.Guards {
 		sb.WriteString(fmt.Sprintf(" [%s]", mermaidEscLabel(g.Description.String())))
 	}

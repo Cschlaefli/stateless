@@ -1,6 +1,5 @@
 stateDiagram-v2
     direction LR
-
     [*] --> OffHook
 
     state Connected {
@@ -8,9 +7,16 @@ stateDiagram-v2
         [*] --> OnHold : PlacedOnHold
         OnHold --> [*] : TakenOffHold
     }
+    note right of Connected
+        entry / startCallTimer
+        exit / func2
+    end note
+    note right of OnHold
+        exit / func6
+    end note
 
     Connected --> OffHook : LeftMessage
     Connected --> Connected : 🔒 MuteMicrophone / 🔒 SetVolume / 🔒 UnmuteMicrophone
-    OffHook --> Ringing : CallDialed
+    OffHook --> Ringing : CallDialed / func1
     OnHold --> PhoneDestroyed : PhoneHurledAgainstWall
     Ringing --> Connected : CallConnected
