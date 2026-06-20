@@ -1,0 +1,13 @@
+stateDiagram-v2
+    direction LR
+
+    [*] --> B
+
+    state C {
+        B
+    }
+
+    A --> B : Z
+    B --> A : X
+    C --> C : 🚫 X
+    C --> A : Y

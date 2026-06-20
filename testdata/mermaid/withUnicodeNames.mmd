@@ -1,0 +1,25 @@
+stateDiagram-v2
+    direction LR
+
+    state "1" as s_1
+    state "2" as s_2
+    state "Ĕ" as u0114
+    state "ų" as u0173
+    state "ㇴ" as u31F4
+    state "ꬠ" as uAB20
+    state "𒀄" as u12004
+    [*] --> u0114
+
+    state u0173 {
+        [*] --> u31F4
+        u31F4
+    }
+
+    state u12004 {
+        state s_1 {
+            s_2
+        }
+        uAB20
+    }
+
+    u0114 --> u0173 : ◵ [œ]

@@ -142,6 +142,12 @@ func (sm *StateMachine) ToGraph() string {
 	return new(graph).formatStateMachine(sm)
 }
 
+// ToMermaid returns the Mermaid stateDiagram-v2 representation of the state machine.
+// It is not guaranteed that the returned string will be the same in different executions.
+func (sm *StateMachine) ToMermaid() string {
+	return toMermaidDiagram(sm)
+}
+
 // State returns the current state.
 func (sm *StateMachine) State(ctx context.Context) (State, error) {
 	state, _, err := sm.stateAccessor(ctx)

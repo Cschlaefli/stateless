@@ -1,0 +1,11 @@
+stateDiagram-v2
+    direction LR
+
+    [*] --> B
+
+    state A {
+        B
+    }
+
+    A --> D : X [func1]
+    B --> C : X [func2]
