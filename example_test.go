@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/qmuntal/stateless"
+	"github.com/Cschlaefli/stateless"
 )
 
 const (
@@ -75,7 +75,7 @@ func Example() {
 
 	phoneCall.ToGraph()
 
-	phoneCall.Fire(triggerCallDialed, "qmuntal")
+	phoneCall.Fire(triggerCallDialed, "Cschlaefli")
 	phoneCall.Fire(triggerCallConnected)
 	phoneCall.Fire(triggerSetVolume, 2)
 	phoneCall.Fire(triggerPlacedOnHold)
@@ -88,7 +88,7 @@ func Example() {
 	fmt.Printf("State is %v\n", phoneCall.MustState())
 
 	// Output:
-	// [Phone Call] placed for : [qmuntal]
+	// [Phone Call] placed for : [Cschlaefli]
 	// [Timer:] Call started at 11:00am
 	// Volume set to 2!
 	// Microphone muted!

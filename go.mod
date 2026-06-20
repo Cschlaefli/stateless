@@ -1,3 +1,3 @@
-module github.com/qmuntal/stateless
+module github.com/Cschlaefli/stateless
 
 go 1.24
