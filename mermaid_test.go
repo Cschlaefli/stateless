@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qmuntal/stateless"
+	"github.com/Cschlaefli/stateless"
 )
 
 func TestStateMachine_ToMermaid(t *testing.T) {
