@@ -3,6 +3,7 @@ package stateless
 // stateDiagram-v2 syntax reference: https://mermaid.js.org/syntax/stateDiagram.html
 //
 // Key syntax rules used here:
+//   - Init directive:   %%{init: {"layout": "elk"}}%%   (ELK only; Dagre is the default)
 //   - Header:           stateDiagram-v2
 //   - Direction:        direction LR
 //   - State alias:      state "Display Name" as validId   (required when name is not a valid id)
@@ -12,6 +13,8 @@ package stateless
 //   - Transition:       src --> dst : label
 //   - Entry into sub:   [*] --> subID : trigger  (inside composite block)
 //   - Exit to super:    subID --> [*] : trigger  (inside composite block)
+//   - Entry note:       note left of id ... end note
+//   - Exit note:        note right of id ... end note
 //
 // Valid mermaid state IDs are ASCII alphanumeric + underscore and must not start with a digit.
 // Non-conforming names are encoded via mermaidStateID and aliased with a state declaration.
@@ -19,7 +22,11 @@ package stateless
 // Multiple transitions between the same (src, dst) pair are merged into one arrow
 // with labels joined by " / " to avoid mermaid only rendering the last label.
 // Transitions between a superstate and its direct substates are rendered inside
-// the composite block as [*] → sub and sub → [*] for cleaner layout.
+// the composite block as [*] -> sub and sub --> [*] for cleaner layout.
+// activate/deactivate/entry actions are emitted as "note left of" blocks.
+// exit actions are emitted as "note right of" blocks.
+// When MermaidConfig.ActionsAsNotes is true, trigger-specific entry actions are also
+// shown as left notes (with the trigger name) instead of inline on the transition label.
 
 //go:generate go test -run TestStateMachine_ToMermaid -update .
 
@@ -30,11 +37,39 @@ import (
 	"strings"
 )
 
-type mermaidGraph struct{}
+// MermaidDirection controls the layout direction of the diagram.
+type MermaidDirection string
+
+const (
+	MermaidDirectionLR MermaidDirection = "LR"
+	MermaidDirectionTB MermaidDirection = "TB"
+	MermaidDirectionRL MermaidDirection = "RL"
+	MermaidDirectionBT MermaidDirection = "BT"
+)
+
+// MermaidConfig controls rendering options for ToMermaid.
+type MermaidConfig struct {
+	// Direction sets the diagram flow direction. Defaults to LR when zero.
+	Direction MermaidDirection
+	// InlineTriggerActions, when true, renders trigger-specific entry actions as
+	// inline on the transition label instead of "note left of" blocks.
+	InlineTriggerActions bool
+}
+
+func (c MermaidConfig) direction() MermaidDirection {
+	if c.Direction == "" {
+		return MermaidDirectionLR
+	}
+	return c.Direction
+}
+
+type mermaidGraph struct {
+	cfg MermaidConfig
+}
 
 // toMermaidDiagram converts sm into a Mermaid stateDiagram-v2 string.
-func toMermaidDiagram(sm *StateMachine) string {
-	return new(mermaidGraph).formatStateMachine(sm)
+func toMermaidDiagram(sm *StateMachine, cfg MermaidConfig) string {
+	return (&mermaidGraph{cfg: cfg}).formatStateMachine(sm)
 }
 
 // mermaidSrcDst identifies a directed edge between two states.
@@ -42,8 +77,9 @@ type mermaidSrcDst struct{ src, dst State }
 
 func (m *mermaidGraph) formatStateMachine(sm *StateMachine) string {
 	var sb strings.Builder
+
 	sb.WriteString("stateDiagram-v2\n")
-	sb.WriteString("    direction LR\n\n")
+	sb.WriteString(fmt.Sprintf("    direction %s\n\n", m.cfg.direction()))
 
 	stateList := m.sortedStateList(sm)
 
@@ -62,7 +98,7 @@ func (m *mermaidGraph) formatStateMachine(sm *StateMachine) string {
 	}
 
 	// Build set of (src, dst) pairs that belong inside a composite block:
-	// direct superstate→substate and substate→superstate edges.
+	// direct superstate->substate and substate->superstate edges.
 	insideSet := m.buildInsideSet(stateList)
 
 	// Composite-state blocks (only for top-level states that have substates).
@@ -73,12 +109,13 @@ func (m *mermaidGraph) formatStateMachine(sm *StateMachine) string {
 		}
 	}
 
-	// Notes for non-trigger-specific entry/exit/activate/deactivate actions.
+	// Entry notes (left) and exit notes (right) for each state.
 	for _, sr := range stateList {
-		m.writeStateNote(&sb, sr)
+		m.writeEntryNote(&sb, sr)
+		m.writeExitNote(&sb, sr)
 	}
 
-	// Outer-level transitions (merged per src→dst pair).
+	// Outer-level transitions (merged per src->dst pair).
 	sb.WriteRune('\n')
 	for _, sr := range stateList {
 		m.writeTransitions(&sb, sm, sr, insideSet)
@@ -122,8 +159,8 @@ func (m *mermaidGraph) writeCompositeState(sb *strings.Builder, sm *StateMachine
 	}
 
 	// Transitions that cross the superstate/substate boundary:
-	//   superstate → substate becomes  [*] --> sub : trigger
-	//   substate → superstate becomes  sub --> [*] : trigger
+	//   superstate -> substate becomes  [*] --> sub : trigger
+	//   substate -> superstate becomes  sub --> [*] : trigger
 	for _, sub := range m.sortedSubstates(sr.Substates) {
 		subID := mermaidStateID(fmt.Sprint(sub.State))
 		for _, label := range m.collectTransitionLabels(sm, sr, sub.State) {
@@ -139,20 +176,20 @@ func (m *mermaidGraph) writeCompositeState(sb *strings.Builder, sm *StateMachine
 }
 
 // collectTransitionLabels returns one formatted label per trigger in sr that
-// transitions to dst. Trigger-specific entry actions on the destination are
-// included inline in the label.
+// transitions to dst. Trigger-specific entry actions are included inline unless
+// ActionsAsNotes is enabled.
 func (m *mermaidGraph) collectTransitionLabels(sm *StateMachine, sr *stateRepresentation, dst State) []string {
 	var labels []string
 	for _, t := range m.sortedTriggers(sr) {
 		switch tb := t.(type) {
 		case *transitioningTriggerBehaviour:
 			if tb.Destination == dst {
-				actions := m.getEntryActions(sm, tb.Destination, tb.Trigger)
+				actions := m.inlineEntryActions(sm, tb.Destination, tb.Trigger)
 				labels = append(labels, m.fmtLabel(tb.Trigger, tb.Guard, "", actions))
 			}
 		case *reentryTriggerBehaviour:
 			if tb.Destination == dst {
-				actions := m.getEntryActions(sm, tb.Destination, tb.Trigger)
+				actions := m.inlineEntryActions(sm, tb.Destination, tb.Trigger)
 				labels = append(labels, m.fmtLabel(tb.Trigger, tb.Guard, "🔄 ", actions))
 			}
 		}
@@ -187,12 +224,12 @@ func (m *mermaidGraph) writeTransitions(sb *strings.Builder, sm *StateMachine, s
 		switch tb := t.(type) {
 		case *transitioningTriggerBehaviour:
 			if !insideSet[mermaidSrcDst{sr.State, tb.Destination}] {
-				actions := m.getEntryActions(sm, tb.Destination, tb.Trigger)
+				actions := m.inlineEntryActions(sm, tb.Destination, tb.Trigger)
 				add(tb.Destination, m.fmtLabel(tb.Trigger, tb.Guard, "", actions))
 			}
 		case *reentryTriggerBehaviour:
 			if !insideSet[mermaidSrcDst{sr.State, tb.Destination}] {
-				actions := m.getEntryActions(sm, tb.Destination, tb.Trigger)
+				actions := m.inlineEntryActions(sm, tb.Destination, tb.Trigger)
 				add(tb.Destination, m.fmtLabel(tb.Trigger, tb.Guard, "🔄 ", actions))
 			}
 		case *internalTriggerBehaviour:
@@ -210,45 +247,57 @@ func (m *mermaidGraph) writeTransitions(sb *strings.Builder, sm *StateMachine, s
 	}
 }
 
-// writeStateNote emits a "note right of" block for all non-trigger-specific
-// entry/exit/activate/deactivate actions on sr.
-func (m *mermaidGraph) writeStateNote(sb *strings.Builder, sr *stateRepresentation) {
-	lines := m.formatActionLines(sr)
+// writeEntryNote emits a "note left of" block for activate, deactivate, and
+// non-trigger-specific entry actions. When ActionsAsNotes is true, trigger-specific
+// entry actions are also included with the trigger name as context.
+func (m *mermaidGraph) writeEntryNote(sb *strings.Builder, sr *stateRepresentation) {
+	var lines []string
+	for _, act := range sr.ActivateActions {
+		lines = append(lines, "activated / "+mermaidEscLabel(act.Description.String()))
+	}
+	for _, act := range sr.DeactivateActions {
+		lines = append(lines, "deactivated / "+mermaidEscLabel(act.Description.String()))
+	}
+	for _, act := range sr.EntryActions {
+		if act.Trigger == nil {
+			lines = append(lines, "entry / "+mermaidEscLabel(act.Description.String()))
+		} else if !m.cfg.InlineTriggerActions {
+			lines = append(lines, fmt.Sprintf("entry(%s) / %s",
+				mermaidEscLabel(fmt.Sprint(*act.Trigger)),
+				mermaidEscLabel(act.Description.String())))
+		}
+	}
 	if len(lines) == 0 {
 		return
 	}
 	id := mermaidStateID(fmt.Sprint(sr.State))
-	sb.WriteString(fmt.Sprintf("    note right of %s\n", id))
+	sb.WriteString(fmt.Sprintf("    note left of %s\n", id))
 	for _, l := range lines {
 		sb.WriteString(fmt.Sprintf("        %s\n", l))
 	}
 	sb.WriteString("    end note\n")
 }
 
-// formatActionLines returns display lines for all non-trigger-specific actions
-// on a state, mirroring the order used in graph.go's formatActions.
-func (m *mermaidGraph) formatActionLines(sr *stateRepresentation) []string {
-	var es []string
-	for _, act := range sr.ActivateActions {
-		es = append(es, "activated / "+mermaidEscLabel(act.Description.String()))
+// writeExitNote emits a "note right of" block for exit actions.
+func (m *mermaidGraph) writeExitNote(sb *strings.Builder, sr *stateRepresentation) {
+	if len(sr.ExitActions) == 0 {
+		return
 	}
-	for _, act := range sr.DeactivateActions {
-		es = append(es, "deactivated / "+mermaidEscLabel(act.Description.String()))
-	}
-	for _, act := range sr.EntryActions {
-		if act.Trigger == nil {
-			es = append(es, "entry / "+mermaidEscLabel(act.Description.String()))
-		}
-	}
+	id := mermaidStateID(fmt.Sprint(sr.State))
+	sb.WriteString(fmt.Sprintf("    note right of %s\n", id))
 	for _, act := range sr.ExitActions {
-		es = append(es, "exit / "+mermaidEscLabel(act.Description.String()))
+		sb.WriteString(fmt.Sprintf("        exit / %s\n", mermaidEscLabel(act.Description.String())))
 	}
-	return es
+	sb.WriteString("    end note\n")
 }
 
-// getEntryActions returns the descriptions of trigger-specific entry actions
-// on the destination state for the given trigger.
-func (m *mermaidGraph) getEntryActions(sm *StateMachine, dst State, t Trigger) []string {
+// inlineEntryActions returns trigger-specific entry action descriptions for use
+// inline on a transition label. Returns nil when ActionsAsNotes is true, so that
+// those actions appear in notes instead.
+func (m *mermaidGraph) inlineEntryActions(sm *StateMachine, dst State, t Trigger) []string {
+	if !m.cfg.InlineTriggerActions {
+		return nil
+	}
 	dest := sm.stateConfig[dst]
 	if dest == nil {
 		return nil

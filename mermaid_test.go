@@ -28,7 +28,7 @@ func TestStateMachine_ToMermaid(t *testing.T) {
 		sp := strings.Split(name, ".")
 		name = sp[len(sp)-1]
 		t.Run(name, func(t *testing.T) {
-			got := fn().ToMermaid()
+			got := fn().ToMermaid(stateless.MermaidConfig{})
 			fname := "testdata/mermaid/" + name + ".mmd"
 			want, err := os.ReadFile(fname)
 			want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
@@ -52,8 +52,9 @@ func TestStateMachine_ToMermaid(t *testing.T) {
 
 func BenchmarkToMermaid(b *testing.B) {
 	sm := phoneCall()
+	cfg := stateless.MermaidConfig{}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = sm.ToMermaid()
+		_ = sm.ToMermaid(cfg)
 	}
 }

@@ -1,5 +1,6 @@
 stateDiagram-v2
     direction LR
+
     [*] --> OffHook
 
     state Connected {
@@ -7,8 +8,10 @@ stateDiagram-v2
         [*] --> OnHold : PlacedOnHold
         OnHold --> [*] : TakenOffHold
     }
-    note right of Connected
+    note left of Connected
         entry / startCallTimer
+    end note
+    note right of Connected
         exit / func2
     end note
     note right of OnHold

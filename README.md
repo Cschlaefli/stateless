@@ -223,6 +223,38 @@ This is the complete Phone Call graph as builded in `example_test.go`.
 
 ![Phone Call graph](assets/phone-graph.svg?raw=true "Phone Call complete DOT")
 
+### Export to Mermaid diagram
+
+`ToMermaid` returns a [Mermaid](https://mermaid.js.org/) `stateDiagram-v2` string. Pass a `MermaidConfig` to control rendering:
+
+```go
+diagram := sm.ToMermaid(stateless.MermaidConfig{
+    Direction: stateless.MermaidDirectionLR, // LR (default), TB, RL, BT
+    Layout:    stateless.MermaidLayoutDagre, // MermaidLayoutDagre (default) or MermaidLayoutELK
+    ActionsAsNotes: false,                  // true moves trigger-specific entry actions to notes
+})
+```
+
+The `testdata/mermaid/` directory contains golden `.mmd` files rendered with the default config for each state machine in `graph_test.go`. To regenerate them after changing the state machine definitions, run:
+
+```sh
+go test -run TestStateMachine_ToMermaid -update .
+```
+
+To regenerate with different config options, edit the `MermaidConfig{}` literal in `mermaid_test.go` before running the command above, or call `ToMermaid` directly in a one-off program:
+
+```go
+// Example: top-to-bottom layout, ELK engine, actions as notes
+cfg := stateless.MermaidConfig{
+    Direction:      stateless.MermaidDirectionTB,
+    Layout:         stateless.MermaidLayoutELK,
+    ActionsAsNotes: true,
+}
+fmt.Println(sm.ToMermaid(cfg))
+```
+
+The diagram can be rendered by any tool that supports Mermaid, such as the [Mermaid live editor](https://mermaid.live), GitHub Markdown fenced code blocks (` ```mermaid `), or the [mermaid-js CLI](https://github.com/mermaid-js/mermaid-cli).
+
 ## Project Goals
 
 This page is an almost-complete description of Stateless, and its explicit aim is to remain minimal.

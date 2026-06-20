@@ -144,8 +144,8 @@ func (sm *StateMachine) ToGraph() string {
 
 // ToMermaid returns the Mermaid stateDiagram-v2 representation of the state machine.
 // It is not guaranteed that the returned string will be the same in different executions.
-func (sm *StateMachine) ToMermaid() string {
-	return toMermaidDiagram(sm)
+func (sm *StateMachine) ToMermaid(cfg MermaidConfig) string {
+	return toMermaidDiagram(sm, cfg)
 }
 
 // State returns the current state.
