@@ -10,9 +10,7 @@ stateDiagram-v2
     }
 
     Connected --> OffHook : LeftMessage
-    Connected --> Connected : 🔒 MuteMicrophone
-    Connected --> Connected : 🔒 SetVolume
-    Connected --> Connected : 🔒 UnmuteMicrophone
+    Connected --> Connected : 🔒 MuteMicrophone / 🔒 SetVolume / 🔒 UnmuteMicrophone
     OffHook --> Ringing : CallDialed
     OnHold --> PhoneDestroyed : PhoneHurledAgainstWall
     Ringing --> Connected : CallConnected

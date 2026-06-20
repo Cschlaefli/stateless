@@ -10,9 +10,16 @@ package stateless
 //   - Composite state:  state id { ... }
 //   - Initial arrow:    [*] --> stateId
 //   - Transition:       src --> dst : label
+//   - Entry into sub:   [*] --> subID : trigger  (inside composite block)
+//   - Exit to super:    subID --> [*] : trigger  (inside composite block)
 //
 // Valid mermaid state IDs are ASCII alphanumeric + underscore and must not start with a digit.
 // Non-conforming names are encoded via mermaidStateID and aliased with a state declaration.
+//
+// Multiple transitions between the same (src, dst) pair are merged into one arrow
+// with labels joined by " / " to avoid mermaid only rendering the last label.
+// Transitions between a superstate and its direct substates are rendered inside
+// the composite block as [*] → sub and sub → [*] for cleaner layout.
 
 //go:generate go test -run TestStateMachine_ToMermaid -update .
 
@@ -29,6 +36,9 @@ type mermaidGraph struct{}
 func toMermaidDiagram(sm *StateMachine) string {
 	return new(mermaidGraph).formatStateMachine(sm)
 }
+
+// mermaidSrcDst identifies a directed edge between two states.
+type mermaidSrcDst struct{ src, dst State }
 
 func (m *mermaidGraph) formatStateMachine(sm *StateMachine) string {
 	var sb strings.Builder
@@ -51,72 +61,141 @@ func (m *mermaidGraph) formatStateMachine(sm *StateMachine) string {
 		sb.WriteString(fmt.Sprintf("    [*] --> %s\n", mermaidStateID(fmt.Sprint(initialState))))
 	}
 
+	// Build set of (src, dst) pairs that belong inside a composite block:
+	// direct superstate→substate and substate→superstate edges.
+	insideSet := m.buildInsideSet(stateList)
+
 	// Composite-state blocks (only for top-level states that have substates).
 	for _, sr := range stateList {
 		if sr.Superstate == nil && len(sr.Substates) > 0 {
 			sb.WriteRune('\n')
-			m.writeCompositeState(&sb, sm, sr, 1)
+			m.writeCompositeState(&sb, sm, sr, 1, insideSet)
 		}
 	}
 
-	// Transitions.
+	// Outer-level transitions (merged per src→dst pair).
 	sb.WriteRune('\n')
 	for _, sr := range stateList {
-		m.writeTransitions(&sb, sr)
+		m.writeTransitions(&sb, sr, insideSet)
 	}
 
 	return sb.String()
 }
 
-func (m *mermaidGraph) writeCompositeState(sb *strings.Builder, sm *StateMachine, sr *stateRepresentation, depth int) {
+// buildInsideSet returns the set of (src, dst) state pairs that should be
+// rendered inside a composite block rather than at the top level.
+func (m *mermaidGraph) buildInsideSet(stateList []*stateRepresentation) map[mermaidSrcDst]bool {
+	set := make(map[mermaidSrcDst]bool)
+	for _, sr := range stateList {
+		for _, sub := range sr.Substates {
+			set[mermaidSrcDst{sr.State, sub.State}] = true
+			set[mermaidSrcDst{sub.State, sr.State}] = true
+		}
+	}
+	return set
+}
+
+func (m *mermaidGraph) writeCompositeState(sb *strings.Builder, sm *StateMachine, sr *stateRepresentation, depth int, insideSet map[mermaidSrcDst]bool) {
 	indent := strings.Repeat("    ", depth)
 	id := mermaidStateID(fmt.Sprint(sr.State))
 	sb.WriteString(fmt.Sprintf("%sstate %s {\n", indent, id))
 
-	// Internal initial-transition inside the composite state.
+	// InitialTransition declared via Configure().InitialTransition().
 	if sr.HasInitialState {
 		if dest := sm.stateConfig[sr.InitialTransitionTarget]; dest != nil {
 			sb.WriteString(fmt.Sprintf("%s    [*] --> %s\n", indent, mermaidStateID(fmt.Sprint(dest.State))))
 		}
 	}
 
+	// Declare substates (recurse for nested composites, simple id for leaves).
 	for _, sub := range m.sortedSubstates(sr.Substates) {
 		if len(sub.Substates) > 0 {
-			// Nested composite state: recurse.
-			m.writeCompositeState(sb, sm, sub, depth+1)
+			m.writeCompositeState(sb, sm, sub, depth+1, insideSet)
 		} else {
-			// Simple substate: declare by id so mermaid knows the hierarchy.
 			sb.WriteString(fmt.Sprintf("%s    %s\n", indent, mermaidStateID(fmt.Sprint(sub.State))))
+		}
+	}
+
+	// Transitions that cross the superstate/substate boundary:
+	//   superstate → substate becomes  [*] --> sub : trigger
+	//   substate → superstate becomes  sub --> [*] : trigger
+	for _, sub := range m.sortedSubstates(sr.Substates) {
+		subID := mermaidStateID(fmt.Sprint(sub.State))
+		for _, label := range m.collectTransitionLabels(sr, sub.State) {
+			sb.WriteString(fmt.Sprintf("%s    [*] --> %s : %s\n", indent, subID, label))
+		}
+		for _, label := range m.collectTransitionLabels(sub, sr.State) {
+			sb.WriteString(fmt.Sprintf("%s    %s --> [*] : %s\n", indent, subID, label))
 		}
 	}
 
 	sb.WriteString(indent + "}\n")
 }
 
-func (m *mermaidGraph) writeTransitions(sb *strings.Builder, sr *stateRepresentation) {
-	srcID := mermaidStateID(fmt.Sprint(sr.State))
-
-	triggers := make([]triggerBehaviour, 0)
-	for _, ts := range sr.TriggerBehaviours {
-		triggers = append(triggers, ts...)
-	}
-	slices.SortFunc(triggers, func(a, b triggerBehaviour) int {
-		return strings.Compare(fmt.Sprint(a.GetTrigger()), fmt.Sprint(b.GetTrigger()))
-	})
-
-	for _, t := range triggers {
+// collectTransitionLabels returns one formatted label per trigger in sr that
+// transitions to dst (transitioningTriggerBehaviour and reentryTriggerBehaviour).
+func (m *mermaidGraph) collectTransitionLabels(sr *stateRepresentation, dst State) []string {
+	var labels []string
+	for _, t := range m.sortedTriggers(sr) {
 		switch tb := t.(type) {
 		case *transitioningTriggerBehaviour:
-			dstID := mermaidStateID(fmt.Sprint(tb.Destination))
-			sb.WriteString(fmt.Sprintf("    %s --> %s : %s\n", srcID, dstID, m.fmtLabel(tb.Trigger, tb.Guard, "")))
+			if tb.Destination == dst {
+				labels = append(labels, m.fmtLabel(tb.Trigger, tb.Guard, ""))
+			}
 		case *reentryTriggerBehaviour:
-			dstID := mermaidStateID(fmt.Sprint(tb.Destination))
-			sb.WriteString(fmt.Sprintf("    %s --> %s : %s\n", srcID, dstID, m.fmtLabel(tb.Trigger, tb.Guard, "🔄 ")))
-		case *internalTriggerBehaviour:
-			sb.WriteString(fmt.Sprintf("    %s --> %s : %s\n", srcID, srcID, m.fmtLabel(tb.Trigger, tb.Guard, "🔒 ")))
-		case *ignoredTriggerBehaviour:
-			sb.WriteString(fmt.Sprintf("    %s --> %s : %s\n", srcID, srcID, m.fmtLabel(tb.Trigger, tb.Guard, "🚫 ")))
+			if tb.Destination == dst {
+				labels = append(labels, m.fmtLabel(tb.Trigger, tb.Guard, "🔄 "))
+			}
 		}
+	}
+	return labels
+}
+
+// writeTransitions emits outer-level transitions for sr, skipping pairs that
+// are inside a composite block. Multiple transitions to the same destination
+// are merged into one arrow with labels joined by " / ".
+func (m *mermaidGraph) writeTransitions(sb *strings.Builder, sr *stateRepresentation, insideSet map[mermaidSrcDst]bool) {
+	srcID := mermaidStateID(fmt.Sprint(sr.State))
+
+	// Collect labels grouped by destination, preserving first-seen order.
+	type dstEntry struct {
+		dstID  string
+		labels []string
+	}
+	var order []State
+	byDst := make(map[string]*dstEntry)
+
+	add := func(dst State, label string) {
+		dstID := mermaidStateID(fmt.Sprint(dst))
+		if _, exists := byDst[dstID]; !exists {
+			order = append(order, dst)
+			byDst[dstID] = &dstEntry{dstID: dstID}
+		}
+		byDst[dstID].labels = append(byDst[dstID].labels, label)
+	}
+
+	for _, t := range m.sortedTriggers(sr) {
+		switch tb := t.(type) {
+		case *transitioningTriggerBehaviour:
+			if !insideSet[mermaidSrcDst{sr.State, tb.Destination}] {
+				add(tb.Destination, m.fmtLabel(tb.Trigger, tb.Guard, ""))
+			}
+		case *reentryTriggerBehaviour:
+			if !insideSet[mermaidSrcDst{sr.State, tb.Destination}] {
+				add(tb.Destination, m.fmtLabel(tb.Trigger, tb.Guard, "🔄 "))
+			}
+		case *internalTriggerBehaviour:
+			add(sr.State, m.fmtLabel(tb.Trigger, tb.Guard, "🔒 "))
+		case *ignoredTriggerBehaviour:
+			add(sr.State, m.fmtLabel(tb.Trigger, tb.Guard, "🚫 "))
+		}
+	}
+
+	for _, dst := range order {
+		dstID := mermaidStateID(fmt.Sprint(dst))
+		e := byDst[dstID]
+		label := strings.Join(e.labels, " / ")
+		sb.WriteString(fmt.Sprintf("    %s --> %s : %s\n", srcID, dstID, label))
 	}
 }
 
@@ -128,6 +207,17 @@ func (m *mermaidGraph) fmtLabel(trigger Trigger, guard transitionGuard, prefix s
 		sb.WriteString(fmt.Sprintf(" [%s]", mermaidEscLabel(g.Description.String())))
 	}
 	return sb.String()
+}
+
+func (m *mermaidGraph) sortedTriggers(sr *stateRepresentation) []triggerBehaviour {
+	triggers := make([]triggerBehaviour, 0, len(sr.TriggerBehaviours))
+	for _, ts := range sr.TriggerBehaviours {
+		triggers = append(triggers, ts...)
+	}
+	slices.SortFunc(triggers, func(a, b triggerBehaviour) int {
+		return strings.Compare(fmt.Sprint(a.GetTrigger()), fmt.Sprint(b.GetTrigger()))
+	})
+	return triggers
 }
 
 func (*mermaidGraph) sortedStateList(sm *StateMachine) []*stateRepresentation {
