@@ -8,6 +8,13 @@ stateDiagram-v2
         [*] --> OnHold : PlacedOnHold
         OnHold --> [*] : TakenOffHold
     }
+
+    Connected --> OffHook : LeftMessage
+    Connected --> Connected : 🔒 MuteMicrophone / 🔒 SetVolume / 🔒 UnmuteMicrophone
+    OffHook --> Ringing : CallDialed
+    OnHold --> PhoneDestroyed : PhoneHurledAgainstWall
+    Ringing --> Connected : CallConnected
+
     note left of Connected
         entry / startCallTimer
     end note
@@ -17,9 +24,6 @@ stateDiagram-v2
     note right of OnHold
         exit / func6
     end note
-
-    Connected --> OffHook : LeftMessage
-    Connected --> Connected : 🔒 MuteMicrophone / 🔒 SetVolume / 🔒 UnmuteMicrophone
-    OffHook --> Ringing : CallDialed / func1
-    OnHold --> PhoneDestroyed : PhoneHurledAgainstWall
-    Ringing --> Connected : CallConnected
+    note left of Ringing
+        entry(CallDialed) / func1
+    end note

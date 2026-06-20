@@ -109,16 +109,18 @@ func (m *mermaidGraph) formatStateMachine(sm *StateMachine) string {
 		}
 	}
 
-	// Entry notes (left) and exit notes (right) for each state.
-	for _, sr := range stateList {
-		m.writeEntryNote(&sb, sr)
-		m.writeExitNote(&sb, sr)
-	}
-
 	// Outer-level transitions (merged per src->dst pair).
 	sb.WriteRune('\n')
 	for _, sr := range stateList {
 		m.writeTransitions(&sb, sm, sr, insideSet)
+	}
+
+	// Notes must come after all states and transitions are defined to avoid
+	// "note before state" parse errors in mermaid.
+	sb.WriteRune('\n')
+	for _, sr := range stateList {
+		m.writeEntryNote(&sb, sr)
+		m.writeExitNote(&sb, sr)
 	}
 
 	return sb.String()
